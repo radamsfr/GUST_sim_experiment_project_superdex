@@ -1,0 +1,145 @@
+{
+  "poseControllerParams": {
+    "jointTracking": [
+      {
+        "damping": 0.0,
+        "saturation": -1.0,
+        "stiffness": 0.0
+      },
+      {
+        "damping": 50.0,
+        "saturation": -1.0,
+        "stiffness": 600.0
+      },
+      {
+        "damping": 50.0,
+        "saturation": -1.0,
+        "stiffness": 600.0
+      },
+      {
+        "damping": 40.0,
+        "saturation": -1.0,
+        "stiffness": 500.0
+      },
+      {
+        "damping": 35.0,
+        "saturation": -1.0,
+        "stiffness": 450.0
+      },
+      {
+        "damping": 20.0,
+        "saturation": -1.0,
+        "stiffness": 200.0
+      },
+      {
+        "damping": 15.0,
+        "saturation": -1.0,
+        "stiffness": 150.0
+      },
+      {
+        "damping": 10.0,
+        "saturation": -1.0,
+        "stiffness": 100.0
+      },
+      {
+        "damping": 0.0,
+        "saturation": -1.0,
+        "stiffness": 0.0
+      }
+    ],
+    "linkPosTracking": [
+      {
+        "damping": 0.0,
+        "saturation": -1.0,
+        "stiffness": 0.0
+      },
+      {
+        "damping": 0.0,
+        "saturation": -1.0,
+        "stiffness": 0.0
+      },
+      {
+        "damping": 0.0,
+        "saturation": -1.0,
+        "stiffness": 0.0
+      },
+      {
+        "damping": 0.0,
+        "saturation": -1.0,
+        "stiffness": 0.0
+      },
+      {
+        "damping": 0.0,
+        "saturation": -1.0,
+        "stiffness": 0.0
+      },
+      {
+        "damping": 0.0,
+        "saturation": -1.0,
+        "stiffness": 0.0
+      },
+      {
+        "damping": 0.0,
+        "saturation": -1.0,
+        "stiffness": 0.0
+      },
+      {
+        "damping": 0.0,
+        "saturation": -1.0,
+        "stiffness": 0.0
+      },
+      {
+        "damping": 0.0,
+        "saturation": -1.0,
+        "stiffness": 0.0
+      }
+    ],
+    "linkRotTracking": [
+      {
+        "damping": 0.0,
+        "saturation": -1.0,
+        "stiffness": 0.0
+      },
+      {
+        "damping": 0.0,
+        "saturation": -1.0,
+        "stiffness": 0.0
+      },
+      {
+        "damping": 0.0,
+        "saturation": -1.0,
+        "stiffness": 0.0
+      },
+      {
+        "damping": 0.0,
+        "saturation": -1.0,
+        "stiffness": 0.0
+      },
+      {
+        "damping": 0.0,
+        "saturation": -1.0,
+        "stiffness": 0.0
+      },
+      {
+        "damping": 0.0,
+        "saturation": -1.0,
+        "stiffness": 0.0
+      },
+      {
+        "damping": 0.0,
+        "saturation": -1.0,
+        "stiffness": 0.0
+      },
+      {
+        "damping": 0.0,
+        "saturation": -1.0,
+        "stiffness": 0.0
+      },
+      {
+        "damping": 0.0,
+        "saturation": -1.0,
+        "stiffness": 0.0
+      }
+    ]
+  }
+}

@@ -1,0 +1,31 @@
+{
+  "base": "//arms/kinova_gen3/GEN3-7DOF-NOVISION_FOR_URDF_ARM_V12.superdex_bot",
+  "modifications": [
+    {
+      "AttachBot": {
+        "enabled": true,
+        "joint": {
+          "name": "allegro_to_kinova",
+          "parentLinkFromJoint": {
+            "translation": [
+              0,
+              0,
+              -0.055
+            ],
+            "rotation": [
+              0,
+              1,
+              0,
+              0
+            ]
+          },
+          "type": "Hard"
+        },
+        "name": "allegro_v5_right",
+        "parentLinkName": "bracelet_link",
+        "path": "//hands/allegro_v5/right/allegro_v5_right.superdex_bot"
+      }
+    }
+  ],
+  "name": "kinova_gen3_allegro_v5_right"
+}
