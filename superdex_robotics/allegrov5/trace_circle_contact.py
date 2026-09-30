@@ -1,10 +1,13 @@
 """Kinova Gen3 7-DOF + Allegro Hand v5: Hybrid Position/Force Control.
 
 Maintains 2.0 N normal contact force against a tabletop while following
-a circular trajectory in the XY plane for 10 seconds, then cleanly releases.
+a circular trajectory in the XY plane for 12 seconds, then cleanly releases.
+
+Force sensing utilizes SuperDex QueryType.TOTAL_CONTACT_FORCE with
+multi-tier native query fallbacks, contact points, and physical compliance.
 
 Finite State Machine Architecture:
-  HOVER -> DESCEND -> TRACE_AND_HOLD (10s) -> RETRACT -> HOVER_AFTER_RETRACT -> DONE
+  HOVER -> DESCEND -> TRACE_AND_HOLD (12s) -> RETRACT -> HOVER_AFTER_RETRACT -> DONE
 """
 
 from __future__ import annotations
@@ -44,16 +47,17 @@ EE_DOWN_ROTATION_VECTOR = [0.0, 0.0, 0.0]  # Points index finger straight DOWN
 TARGET_FORCE_N = 2.0         # 2.0 N target press force
 FORCE_TOLERANCE_N = 0.2      # +/- 0.2 N tolerance [1.8 N, 2.2 N]
 FORCE_RAMP_SEC = 0.40        # Smooth 0.4s ramp to target force (prevents impact shock)
-TRACE_DURATION_SEC = 12.0    # 10.0 seconds contact trace duration
-TABLE_SURFACE_Z = 0.1055     # Calibrated table contact height
-HOVER_HEIGHT_Z = 0.20        # Hover standoff height
+TRACE_DURATION_SEC = 12.0    # 12.0 seconds contact trace duration
+TABLE_SURFACE_Z = 0.0000     # Tabletop flush with robot mounting base (Z = 0)
+ESTIMATED_TABLE_Z = 0.198   # Estimated table height for initial descent (Z = 0.198m)
+HOVER_HEIGHT_Z  = 0.1500     # 15 cm standoff above the table (Z = 0.15m)
 DESCENT_SPEED_MPS = 0.035    # 35 mm/s descent speed
 RETRACT_SPEED_MPS = 0.040    # 40 mm/s retraction speed
 CONTACT_STIFFNESS_N_PER_M = 1000.0
 
 # Circular Trajectory Parameters (XY Plane)
 CIRCLE_RADIUS = 0.08         # 8 cm radius
-CIRCLE_PERIOD_SEC = 4.0      # 4.0 seconds per revolution (10s = 2.5 revolutions)
+CIRCLE_PERIOD_SEC = 4.0      # 4.0 seconds per revolution (12s = 3 revolutions)
 
 # Pointed finger configuration for 16 Allegro hand joints
 HAND_POINTED_QPOS = [
@@ -112,23 +116,24 @@ def find_fingertip_link_handle(scene: physics.Scene, bot_actor) -> tuple[int, st
     return handles[-1], scene.get_actor(handles[-1]).get_name()
 
 
-def spawn_visible_table(scene: physics.Scene, center_x: float = 0.75) -> float:
-    surface_z = 0.000
+def spawn_visible_table(scene: physics.Scene, center_x: float = 0.75, surface_z: float = TABLE_SURFACE_Z) -> float:
+    """Spawns table plane collider and visual prefab flush at surface_z = 0.0."""
     # plane_shape = physics.create_plane_shape(normal=[0.0, 0.0, 1.0], distance=surface_z)
     # scene.create_rigid_actor(name="table_collider", shape=plane_shape, is_static=True)
 
     try:
         table_prefab_path = str(resolve_asset("table/table.mochi_scene"))
+        # The 0.80m tall table translated by -0.80m puts its top surface exactly at Z = 0.0
         physics.prefab.add_to_scene(
             prefab_path=table_prefab_path,
             root_path=str(resolve_asset_root("table/table.mochi_scene")),
             scene=scene,
             params=physics.prefab.PrefabParams(
                 name="tablePrefab",
-                translation=[float(center_x), 0.0, -0.80],
+                translation=[float(center_x), 0.0, surface_z - 0.80],  # -0.80m translation
             ),
         )
-        print(f"[Setup] Loaded Visible Table Prefab at X={center_x:.2f}m")
+        print(f"[Setup] Tabletop aligned flush with robot base plate at Z = {surface_z:.4f}m")
     except Exception as e:
         print(f"[Setup] Note on table prefab: {e}")
 
@@ -136,41 +141,86 @@ def spawn_visible_table(scene: physics.Scene, center_x: float = 0.75) -> float:
 
 
 # ==============================================================================
-# Contact Force Sensor Interface
+# Robust Contact Force Sensor Interface
 # ==============================================================================
 class FingertipForceSensor:
     def __init__(self, tip_actor, stiffness_n_per_m: float = CONTACT_STIFFNESS_N_PER_M):
         self.tip_actor = tip_actor
         self.k_contact = stiffness_n_per_m
-        self.free_air_tracking_offset = None
+        self.free_air_offset = 0.0
+        self.query_handle = None
+        self.target_qt = None
 
         if hasattr(physics, "QueryType"):
-            if hasattr(physics.QueryType, "TOTAL_CONTACT_FORCE") and hasattr(tip_actor, "register_query"):
+            for cand in ["TOTAL_CONTACT_FORCE", "TotalContactForce", "CONTACT_FORCE"]:
+                if hasattr(physics.QueryType, cand):
+                    self.target_qt = getattr(physics.QueryType, cand)
+                    break
+
+            if self.target_qt is not None and hasattr(tip_actor, "register_query"):
                 try:
-                    tip_actor.register_query(physics.QueryType.TOTAL_CONTACT_FORCE)
-                    print("[Sensor] Registered TOTAL_CONTACT_FORCE query.")
+                    supported = True
+                    if hasattr(tip_actor, "is_query_supported"):
+                        supported = tip_actor.is_query_supported(self.target_qt)
+                    if supported:
+                        try:
+                            self.query_handle = tip_actor.register_query(self.target_qt)
+                        except TypeError:
+                            self.query_handle = tip_actor.register_query(type=self.target_qt)
                 except Exception as e:
                     print(f"[Sensor] Note on register_query: {e}")
 
     def calibrate_free_air(self, actual_tip_z: float, cmd_tip_z: float):
-        self.free_air_tracking_offset = actual_tip_z - cmd_tip_z
+        self.free_air_offset = actual_tip_z - cmd_tip_z
 
     def read_force_z(self, actual_tip_z: float, cmd_tip_z: float, table_surface_z: float = TABLE_SURFACE_Z) -> float:
-        if actual_tip_z > (table_surface_z + 0.002):
+        # Ignore forces in free air (eliminates premature touchdown triggers)
+        if actual_tip_z > (table_surface_z + 0.015):
             return 0.0
 
-        # Native physics query check
-        if hasattr(self.tip_actor, "get_query_result") and hasattr(physics, "QueryType"):
+        # Native query evaluation
+        if hasattr(self.tip_actor, "get_query_result") and self.target_qt is not None:
             try:
-                res = self.tip_actor.get_query_result(physics.QueryType.TOTAL_CONTACT_FORCE)
-                if res is not None and np.linalg.norm(res) > 0.05:
-                    return float(np.abs(res[2]))
+                res = None
+                if self.query_handle is not None:
+                    try:
+                        res = self.tip_actor.get_query_result(self.query_handle)
+                    except Exception:
+                        pass
+                if res is None:
+                    res = self.tip_actor.get_query_result(self.target_qt)
+
+                if res is not None:
+                    res_arr = np.asarray(res, dtype=float)
+                    if res_arr.size >= 3 and np.linalg.norm(res_arr) > 0.05:
+                        return float(abs(res_arr[2]))
             except Exception:
                 pass
 
-        # Spring deflection estimate against table
-        deflection = max(0.0, table_surface_z - cmd_tip_z)
+        # Actor getters fallback
+        for getter_name in ["get_total_contact_force", "get_total_contact_force_world", "get_contact_force"]:
+            if hasattr(self.tip_actor, getter_name):
+                try:
+                    res = getattr(self.tip_actor, getter_name)()
+                    if res is not None and len(res) >= 3:
+                        force_vec = np.asarray(res, dtype=float)
+                        f_z = abs(force_vec[2])
+                        if f_z > 0.05:
+                            return float(f_z)
+                except Exception:
+                    pass
+
+        # Spring deflection fallback
+        raw_deflection = (actual_tip_z - cmd_tip_z) - self.free_air_offset
+        deflection = max(0.0, raw_deflection)
         return float(self.k_contact * deflection)
+
+    def teardown(self):
+        if self.query_handle is not None and hasattr(self.tip_actor, "cancel_query"):
+            try:
+                self.tip_actor.cancel_query(self.query_handle)
+            except Exception:
+                pass
 
 
 # ==============================================================================
@@ -361,6 +411,7 @@ def main():
     ik_bot = None
     ik_solver = None
     ik_wrist_handle = None
+    sensor = None
     logger = None
 
     try:
@@ -383,7 +434,8 @@ def main():
         sim_wrist_actor = scene.get_actor(sim_wrist_handle)
         sim_tip_actor = scene.get_actor(sim_tip_handle)
 
-        spawn_visible_table(scene, center_x=0.75)
+        # Spawn solid table collision plane and prefab at calibrated height
+        spawn_visible_table(scene, center_x=0.75, surface_z=TABLE_SURFACE_Z)
 
         # 2. Kinematic Twin Scene (IK)
         ik_scene = physics.create_scene("Kinova IK Scene")
@@ -462,20 +514,20 @@ def main():
         # 6. Control Parameters (Admittance Z + Cartesian PI XY)
         # ======================================================================
         # Normal Force Admittance Gains (Z axis)
-        KP_FORCE = 0.0002   # m/(N*s)
-        KI_FORCE = 0.0006   # m/(N*s^2)
-        KD_FORCE = 0.00015  # Velocity damping against impact
+        KP_FORCE = 0.00015   # m/(N*s)
+        KI_FORCE = 0.00040   # m/(N*s^2)
+        KD_FORCE = 0.00010   # Velocity damping against impact
         force_integral = 0.0
         prev_tip_z = hover_tip_xyz[2]
 
-        # In-Plane Cartesian PI Gains (XY plane)
-        KP_CART = 0.85
-        KI_CART = 2.50
-        MAX_I_CLIP = 0.050  # Clamp integral correction to +/- 50 mm
+        KP_CART = 0.30       # Reduced from 0.85
+        KI_CART = 0.50       # Reduced from 2.50
+        MAX_I_CLIP = 0.015   # Clamped to +/- 15 mm (reduced from 50 mm)
         tip_error_integral_xy = np.zeros(2, dtype=float)
 
         # State Machine Initialization
         STATE = "HOVER"
+        surface_z = ESTIMATED_TABLE_Z
         cmd_tip_z = hover_tip_xyz[2]
         trace_start_time = None
         retract_finish_time = None
@@ -497,7 +549,7 @@ def main():
                 # A. Read current fingertip position & force
                 actual_tip_xyz = np.asarray(sim_tip_actor.get_root_transform().translation, dtype=float)
                 actual_tip_z = actual_tip_xyz[2]
-                current_force_z = sensor.read_force_z(actual_tip_z, cmd_tip_z, TABLE_SURFACE_Z)
+                current_force_z = sensor.read_force_z(actual_tip_z, cmd_tip_z, surface_z)
 
                 # Defaults for trajectory and force reference
                 target_f_for_log = 0.0
@@ -506,6 +558,7 @@ def main():
                 # ==============================================================
                 # B. State Machine Transitions & Control Synthesis
                 # ==============================================================
+
                 if STATE == "HOVER":
                     cmd_tip_z = hover_tip_xyz[2]
                     target_tip_xy = start_tip_xy.copy()
@@ -515,32 +568,43 @@ def main():
                         print(f"[{sim_time:.2f}s] Beginning descent toward table surface...")
 
                 elif STATE == "DESCEND":
-                    cmd_tip_z -= DESCENT_SPEED_MPS * TIME_STEP
+                    # Adapt descent speed as contact approaches
+                    if current_force_z < 0.20:
+                        speed = DESCENT_SPEED_MPS
+                    else:
+                        speed = DESCENT_SPEED_MPS * max(0.20, 1.0 - (current_force_z / TARGET_FORCE_N))
+
+                    cmd_tip_z -= speed * TIME_STEP
                     target_tip_xy = start_tip_xy.copy()
 
-                    if actual_tip_z <= (TABLE_SURFACE_Z + 0.001) or current_force_z >= 0.15:
+                    # TOUCHDOWN: Trigger when physical resistance is met
+                    if current_force_z >= 0.50:
                         STATE = "TRACE_AND_HOLD"
                         trace_start_time = sim_time
-                        cmd_tip_z = TABLE_SURFACE_Z
+                        
+                        # Latch the TRUE physical table height from simulation reality!
+                        surface_z = actual_tip_z
+                        cmd_tip_z = actual_tip_z  # Continuous height, zero step impact
+                        
                         force_integral = 0.0
                         tip_error_integral_xy = np.zeros(2, dtype=float)
-                        logger.mark_event("Touchdown / Trace Start", sim_time)
-                        print(f"[{sim_time:.2f}s] Touchdown at Z={actual_tip_z*1000:.1f}mm. Beginning 10s trace...")
+                        logger.mark_event("Touchdown / Calibrated", sim_time)
+                        print(f"[{sim_time:.2f}s] Touchdown! Calibrated Table Surface Z = {surface_z*1000:.1f} mm")
 
                 elif STATE == "TRACE_AND_HOLD":
                     elapsed_trace = sim_time - trace_start_time
 
-                    # 1. Smooth Force Reference Ramp (0 -> 2.0 N over 0.4s)
+                    # Force Reference Ramp
                     if elapsed_trace < FORCE_RAMP_SEC:
                         target_force = TARGET_FORCE_N * (elapsed_trace / FORCE_RAMP_SEC)
                     else:
                         target_force = TARGET_FORCE_N
                     target_f_for_log = target_force
 
-                    # 2. Normal Force Admittance Law (Z-Axis)
+                    # Normal Force Admittance Law (Z-Axis)
                     force_error = target_force - current_force_z
                     force_integral += force_error * TIME_STEP
-                    force_integral = np.clip(force_integral, -0.5, 0.5)
+                    force_integral = np.clip(force_integral, -0.4, 0.4)
 
                     tip_vel_z = (actual_tip_z - prev_tip_z) / TIME_STEP
                     z_correction = -(
@@ -549,62 +613,38 @@ def main():
                         KD_FORCE * tip_vel_z
                     )
                     cmd_tip_z += z_correction
-                    cmd_tip_z = np.clip(cmd_tip_z, TABLE_SURFACE_Z - 0.0035, TABLE_SURFACE_Z + 0.001)
 
-                    # 3. Circular Trajectory Generation (XY Plane)
+                    # FIX 3: Allow upward compliance to relieve force!
+                    cmd_tip_z = np.clip(cmd_tip_z, surface_z - 0.006, hover_tip_xyz[2])
+
+                    # Circular Trajectory Generation (XY Plane)
                     theta = 2.0 * np.pi * (elapsed_trace / CIRCLE_PERIOD_SEC)
                     target_tip_xy = np.array([
                         circle_center_xy[0] + CIRCLE_RADIUS * np.cos(theta),
                         circle_center_xy[1] + CIRCLE_RADIUS * np.sin(theta),
                     ])
 
-                    # 4. Check for 10.0-Second Completion -> LATCH STOP POSITION
                     if elapsed_trace >= TRACE_DURATION_SEC:
                         STATE = "RETRACT"
                         retract_start_time = sim_time
-                        # FIX 1: Latch exact stopping position so robot doesn't snap to start
                         retract_tip_xy = target_tip_xy.copy()
-                        # FIX 2: Clear integral windup to prevent horizontal kicks on liftoff
                         tip_error_integral_xy = np.zeros(2, dtype=float)
                         force_integral = 0.0
-                        logger.mark_event("10s Trace Complete / Retract", sim_time)
-                        print(f"[{sim_time:.2f}s] 10.0s trace complete at {retract_tip_xy}. Smoothly releasing contact...")
-
+                        logger.mark_event("Trace Complete / Retract", sim_time)
+                        print(f"[{sim_time:.2f}s] Trace complete. Smoothly retracting...")
+                        
                 elif STATE == "RETRACT":
-                    # FIX 3: Hold the exact stopping XY coordinate throughout retraction
+                    # Hold exact stopping XY coordinate while ascending vertically
                     target_tip_xy = retract_tip_xy.copy()
-                    elapsed_retract = sim_time - retract_start_time
-                    RELEASE_RAMP_SEC = 0.30
-
-                    # FIX 4: Smooth 2-stage release (unloading ramp followed by vertical ascent)
-                    if elapsed_retract < RELEASE_RAMP_SEC:
-                        # Stage A: Ramp target force 2.0 N -> 0.0 N while decompressing fingertip
-                        ramp_ratio = 1.0 - (elapsed_retract / RELEASE_RAMP_SEC)
-                        target_force = TARGET_FORCE_N * ramp_ratio
-                        target_f_for_log = target_force
-
-                        force_error = target_force - current_force_z
-                        force_integral += force_error * TIME_STEP
-                        force_integral = np.clip(force_integral, -0.5, 0.5)
-                        tip_vel_z = (actual_tip_z - prev_tip_z) / TIME_STEP
-                        z_correction = -(
-                            KP_FORCE * force_error +
-                            KI_FORCE * force_integral -
-                            KD_FORCE * tip_vel_z
-                        )
-                        cmd_tip_z += z_correction
-                        cmd_tip_z = np.clip(cmd_tip_z, TABLE_SURFACE_Z - 0.0035, TABLE_SURFACE_Z + 0.002)
-                    else:
-                        # Stage B: Ascend vertically into free air to hover height
-                        target_f_for_log = 0.0
-                        cmd_tip_z += RETRACT_SPEED_MPS * TIME_STEP
+                    target_f_for_log = 0.0
+                    cmd_tip_z += RETRACT_SPEED_MPS * TIME_STEP
 
                     if cmd_tip_z >= hover_tip_xyz[2]:
                         cmd_tip_z = hover_tip_xyz[2]
                         STATE = "HOVER_AFTER_RETRACT"
                         retract_finish_time = sim_time
                         logger.mark_event("Retracted", sim_time)
-                        print(f"[{sim_time:.2f}s] Fully retracted to hover height. Holding for 1s...")
+                        print(f"[{sim_time:.2f}s] Retracted to hover height. Holding for 1.0s...")
 
                 elif STATE == "HOVER_AFTER_RETRACT":
                     target_tip_xy = retract_tip_xy.copy()
@@ -612,9 +652,8 @@ def main():
                     target_f_for_log = 0.0
                     if sim_time - retract_finish_time >= 1.0:
                         STATE = "DONE"
-                        print(f"[{sim_time:.2f}s] Simulation task cleanly finished!")
+                        print(f"[{sim_time:.2f}s] Mission Complete!")
 
-                # Store for velocity calculation
                 prev_tip_z = actual_tip_z
 
                 # ==============================================================
@@ -628,7 +667,6 @@ def main():
                 # ==============================================================
                 # D. Target Synthesis & IK Solve
                 # ==============================================================
-                # Nominal wrist target
                 nominal_wrist_x = target_tip_xy[0] - tip_offset_world[0]
                 nominal_wrist_y = target_tip_xy[1] - tip_offset_world[1]
                 nominal_wrist_z = cmd_tip_z - tip_offset_world[2]
@@ -641,7 +679,7 @@ def main():
                 ]
 
                 ik_position_target.set_target_position(compensated_wrist_xyz)
-                for _ in range(5):
+                for _ in range(15):
                     ik_solver.solve_ik()
 
                 # Dispatch joint targets to Mochi Controller
@@ -657,7 +695,7 @@ def main():
                 # E. Telemetry & Console Diagnostics
                 # ==============================================================
                 step_count += 1
-                full_target_xyz = np.array([target_tip_xy[0], target_tip_xy[1], TABLE_SURFACE_Z])
+                full_target_xyz = np.array([target_tip_xy[0], target_tip_xy[1], surface_z])
                 logger.record(
                     sim_time,
                     current_force_z,
@@ -683,6 +721,9 @@ def main():
     finally:
         signal.signal(signal.SIGINT, signal.SIG_IGN)
         print("[Teardown] Cleaning up resources...")
+
+        if sensor is not None:
+            sensor.teardown()
 
         if logger is not None:
             try:
