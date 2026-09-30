@@ -78,7 +78,7 @@ def resolve_combo_path() -> str:
 def create_combo_robot(scene: physics.Scene, bot_path: str, ctx: robotics.RoboticsContext) -> robotics.Bot:
     bot_prefab = robotics.load_bot_prefab_from_file(bot_path)
     for i in range(len(bot_prefab.links)):
-        bot_prefab.links[i].has_gravity = True
+        bot_prefab.links[i].has_gravity = False
     return robotics.create_bot(scene, bot_prefab, ctx)
 
 
