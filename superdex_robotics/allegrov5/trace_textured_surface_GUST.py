@@ -2,7 +2,7 @@
 
 GUST Safety Filter Integration:
 1. Physical Task: Traces an 8 cm radius circle on a textured plate while regulating
-   normal contact force F_z to TARGET_FORCE_N = 2.0 N within [1.8 N, 2.2 N].
+   normal contact force F_z to TARGET_FORCE_N = 2.0 N within [1.70 N, 2.30 N].
 2. Disturbance Landscape: The Lipschitz-continuous textured surface acts as a spatial
    disturbance d_i = |F_z - F_target| with known Lipschitz constant L_D.
 3. Trust Cones & Event-Triggered Sampling: GUST maintains the upper-bound envelope:
@@ -12,7 +12,7 @@ GUST Safety Filter Integration:
    tangential tracing speed, giving the vertical admittance controller ample time to
    conform to steep hills and prevent contact force violations.
 5. Focused Visuals: 2-panel figure:
-   - Panel 1: Contact Force vs [1.8 N, 2.2 N] Tolerance Band + Governor Scaling s(t).
+   - Panel 1: Contact Force vs [1.70 N, 2.30 N] Tolerance Band + Governor Scaling s(t).
    - Panel 2: 2D Topographic Map with Trajectory, GUST Samples, and Trust Cones.
 """
 
@@ -51,7 +51,7 @@ EE_DOWN_ROTATION_VECTOR = [0.0, 0.0, 0.0]  # Points index finger straight DOWN
 
 # Force & Contact Parameters
 TARGET_FORCE_N = 2.0         # 2.0 N nominal target contact force
-FORCE_TOLERANCE_N = 0.2      # +/- 0.2 N tolerance band [1.8 N, 2.2 N]
+FORCE_TOLERANCE_N = 0.25      # +/- 0.25 N tolerance band [1.75 N, 2.25 N]
 HOVER_HEIGHT_Z  = 0.2000     # 20 cm standoff height
 DESCENT_SPEED_MPS = 0.035    # 35 mm/s descent speed
 RETRACT_SPEED_MPS = 0.040    # 40 mm/s retraction speed
@@ -66,7 +66,7 @@ TOTAL_REVOLUTIONS = 2.0      # Trace 2 full revolutions under GUST
 # GUST Safety Filter Configuration
 # ==============================================================================
 GUST_L_D = 8.0               # Known a-priori Lipschitz constant of force disturbance [N/m]
-GUST_D_MAX = FORCE_TOLERANCE_N  # Maximum allowable disturbance before failure (0.20 N)
+GUST_D_MAX = FORCE_TOLERANCE_N  # Maximum allowable disturbance before failure (0.25 N)
 GUST_EPSILON = 0.03          # Buffer margin below D_max to trigger new tactile sample (N)
 GUST_MIN_STEP_DIST = 0.015   # Minimum spatial distance between samples (15 mm)
 GUST_LOOKAHEAD_DIST = 0.018  # Lookahead distance along circular trajectory (18 mm)
@@ -388,49 +388,103 @@ class GUSTTelemetryLogger:
         states = np.array(self.states)
         contact_mask = states == "TRACE_AND_HOLD"
 
-        fig, (ax_f, ax_map) = plt.subplots(1, 2, figsize=(16, 6.5))
+        # Publication-ready aspect ratio and typography styling
+        fig, (ax_f, ax_map) = plt.subplots(
+            1, 2, 
+            figsize=(18, 7.0),
+            gridspec_kw={"wspace": 0.48}   # <-- Adds clearance between the two panels
+        )
 
         # ==============================================================
-        # Panel 1: Normal Contact Force vs [1.8 N, 2.2 N] Tolerance Band
+        # Panel 1: Normal Contact Force vs Tolerance Band & Governor
         # ==============================================================
-        ax_f.plot(t, forces, "b-", linewidth=2.0, label="Fingertip Force $F_z(t)$ (GUST Controlled)")
-        ax_f.axhline(TARGET_FORCE_N, color="red", linestyle="--", linewidth=1.8, label=f"Target Force ({TARGET_FORCE_N:.1f} N)")
-        
+        ax_f.plot(
+            t,
+            forces,
+            color="#0055d4",
+            linestyle="-",
+            linewidth=2.4,
+            label="Contact Force $F_z(t)$",
+            zorder=3,
+        )
+        ax_f.axhline(
+            TARGET_FORCE_N,
+            color="#d62728",
+            linestyle="--",
+            linewidth=2.0,
+            label=f"Target Force ({TARGET_FORCE_N:.1f} N)",
+            zorder=2,
+        )
+
         # Tolerance band
         upper_bound = TARGET_FORCE_N + FORCE_TOLERANCE_N
         lower_bound = TARGET_FORCE_N - FORCE_TOLERANCE_N
-        ax_f.axhline(upper_bound, color="green", linestyle=":", linewidth=1.5, label="Tolerance Band (±0.2 N)")
-        ax_f.axhline(lower_bound, color="green", linestyle=":", linewidth=1.5)
-        ax_f.fill_between(t, lower_bound, upper_bound, color="green", alpha=0.15)
-
-        # Plot sample events as vertical red ticks
-        if gust_filter is not None and gust_filter.sample_times:
-            for s_t in gust_filter.sample_times:
-                ax_f.axvline(s_t, color="magenta", linestyle=":", alpha=0.6, linewidth=1.0)
-            ax_f.plot([], [], color="magenta", linestyle=":", label="GUST Cones Sampled")
-
-        # Secondary Y axis for Governor Speed Scale
-        ax_gov = ax_f.twinx()
-        ax_gov.plot(t, gov_scales, color="darkorange", linestyle="-.", linewidth=1.5, alpha=0.85, label="Governor Speed Scale $s(t)$")
-        ax_gov.set_ylabel("Governor Speed Scaling factor $s(t)$", color="darkorange", fontsize=10)
-        ax_gov.set_ylim([0.0, 1.1])
-        ax_gov.tick_params(axis="y", labelcolor="darkorange")
-
-        ax_f.set_xlabel("Time [s]", fontsize=11)
-        ax_f.set_ylabel("Normal Force $F_z$ [N]", fontsize=11)
-        
-        title_f = (
-            "Panel 1: Contact Force Regulated WITH GUST Governor"
-            if is_gust_enabled
-            else "Panel 1: Contact Force WITHOUT GUST (Unfiltered Baseline)"
+        ax_f.axhline(
+            upper_bound,
+            color="#2ca02c",
+            linestyle=":",
+            linewidth=1.8,
+            label=f"Tolerance Band (±{FORCE_TOLERANCE_N:.2f} N)",
+            zorder=2,
         )
-        ax_f.set_title(title_f, fontweight="bold", fontsize=12)
-        ax_f.grid(True, linestyle="--", alpha=0.5)
-        
-        # Combine legends from both axes
+        ax_f.axhline(lower_bound, color="#2ca02c", linestyle=":", linewidth=1.8, zorder=2)
+        ax_f.fill_between(
+            t,
+            lower_bound,
+            upper_bound,
+            color="#2ca02c",
+            alpha=0.18,
+            zorder=1,
+        )
+
+        # Secondary Y axis for Governor Speed Scale (SOLID LINE)
+        ax_gov = ax_f.twinx()
+        ax_gov.plot(
+            t,
+            gov_scales,
+            color="#e66101",
+            linestyle="-",
+            linewidth=2.2,
+            alpha=0.95,
+            label="Governor Scale $s(t)$",
+            zorder=4,
+        )
+        ax_gov.set_ylabel(
+            "Governor Speed Scaling $s(t)$",
+            color="#b34700",
+            fontsize=18,
+            fontweight="bold",
+        )
+        ax_gov.set_ylim([0.0, 1.15])
+        ax_gov.tick_params(axis="y", labelcolor="#b34700", labelsize=15)
+
+        ax_f.set_xlabel("Time [s]", fontsize=18, fontweight="bold")
+        ax_f.set_ylabel("Normal Force $F_z$ [N]", fontsize=18, fontweight="bold")
+        ax_f.tick_params(axis="both", labelsize=15)
+
+        title_f = (
+            "Contact Force Regulation with GUST Governor"
+            if is_gust_enabled
+            else "Contact Force Regulation (Unfiltered Baseline)"
+        )
+        ax_f.set_title(title_f, fontweight="bold", fontsize=20, pad=12)
+        ax_f.grid(True, linestyle="--", alpha=0.5, linewidth=0.8)
+
+        # Place legend below axis so data curves are never hidden
         lines_f, labels_f = ax_f.get_legend_handles_labels()
         lines_g, labels_g = ax_gov.get_legend_handles_labels()
-        ax_f.legend(lines_f + lines_g, labels_f + labels_g, loc="upper left", fontsize=9)
+        ax_f.legend(
+            lines_f + lines_g,
+            labels_f + labels_g,
+            loc="upper center",
+            bbox_to_anchor=(0.5, -0.16),
+            ncol=2,
+            fontsize=18,
+            frameon=True,
+            facecolor="white",
+            edgecolor="#cccccc",
+            framealpha=0.95,
+        )
 
         # ==============================================================
         # Panel 2: 2D Topographic Map with Trajectory & GUST Cones
@@ -439,42 +493,78 @@ class GUSTTelemetryLogger:
             cx = float(np.mean(target_pos[:, 0]))
             cy = float(np.mean(target_pos[:, 1]))
             margin = 1.35 * CIRCLE_RADIUS
-            gx = np.linspace(cx - margin, cx + margin, 120)
-            gy = np.linspace(cy - margin, cy + margin, 120)
+            gx = np.linspace(cx - margin, cx + margin, 140)
+            gy = np.linspace(cy - margin, cy + margin, 140)
             GX, GY = np.meshgrid(gx, gy)
             coords_flat = np.column_stack([GX.ravel(), GY.ravel()])
 
             h_grid_mm = landscape_fn(coords_flat).reshape(GX.shape) * 1000.0  # mm
             cf = ax_map.contourf(GX, GY, h_grid_mm, levels=25, cmap="terrain", alpha=0.55)
-            cs = ax_map.contour(GX, GY, h_grid_mm, levels=10, colors="dimgray", alpha=0.35, linewidths=0.6)
-            ax_map.clabel(cs, inline=True, fontsize=7, fmt="%.1f")
-            
+            cs = ax_map.contour(
+                GX,
+                GY,
+                h_grid_mm,
+                levels=10,
+                colors="dimgray",
+                alpha=0.45,
+                linewidths=0.7,
+            )
+            ax_map.clabel(cs, inline=True, fontsize=15, fmt="%.1f")
+
             cbar = fig.colorbar(cf, ax=ax_map, fraction=0.046, pad=0.04)
-            cbar.set_label("Surface Undulation $h(x, y)$ [mm]", fontsize=9)
+            cbar.set_label("Surface Height $h(x, y)$ [mm]", fontsize=18, fontweight="bold")
+            cbar.ax.tick_params(labelsize=15)
 
         # Nominal Target Circle
-        ax_map.plot(target_pos[:, 0], target_pos[:, 1], "r--", linewidth=2.0, label="Nominal Target Circle", zorder=3)
+        ax_map.plot(
+            target_pos[:, 0],
+            target_pos[:, 1],
+            color="#d62728",
+            linestyle="--",
+            linewidth=2.2,
+            label="Nominal Target Circle",
+            zorder=3,
+        )
 
         # Actual Path (In Contact)
         if np.any(contact_mask):
             ax_map.plot(
                 actual_pos[contact_mask, 0],
                 actual_pos[contact_mask, 1],
-                "b-",
-                linewidth=2.2,
-                label="Actual Path (GUST Regulated)",
+                color="#0055d4",
+                linestyle="-",
+                linewidth=2.4,
+                label="Actual Path (In Contact)",
                 zorder=4,
             )
         else:
-            ax_map.plot(actual_pos[:, 0], actual_pos[:, 1], "b-", linewidth=1.5, label="Actual Path", zorder=4)
+            ax_map.plot(
+                actual_pos[:, 0],
+                actual_pos[:, 1],
+                color="#0055d4",
+                linestyle="-",
+                linewidth=2.0,
+                label="Actual Path",
+                zorder=4,
+            )
 
         # Overlay GUST Samples & Trust Radius Cones
         if gust_filter is not None and len(gust_filter.sampled_points) > 0:
             s_pts = np.asarray(gust_filter.sampled_points)
             s_dists = np.asarray(gust_filter.sampled_disturbances)
-            
+
             # Star markers for sample locations
-            ax_map.scatter(s_pts[:, 0], s_pts[:, 1], color="red", marker="*", s=110, zorder=6, label="GUST Tactile Samples")
+            ax_map.scatter(
+                s_pts[:, 0],
+                s_pts[:, 1],
+                color="#e41a1c",
+                edgecolors="black",
+                linewidths=0.6,
+                marker="*",
+                s=140,
+                zorder=6,
+                label="Tactile Sample $p_i$",
+            )
 
             # Draw trust radius circle for each cone: r_trust = (D_max - d_i) / L_D
             for i in range(len(s_pts)):
@@ -482,32 +572,43 @@ class GUSTTelemetryLogger:
                 circle_patch = plt.Circle(
                     (s_pts[i, 0], s_pts[i, 1]),
                     r_trust,
-                    color="red",
+                    color="#e41a1c",
                     fill=False,
                     linestyle="--",
-                    linewidth=0.8,
-                    alpha=0.65,
+                    linewidth=1.2,
+                    alpha=0.75,
                 )
                 ax_map.add_patch(circle_patch)
 
             # Dummy line for legend
-            ax_map.plot([], [], color="red", linestyle="--", linewidth=1.0, label="GUST Trust Cones ($r_{trust}$)")
+            ax_map.plot([], [], color="#e41a1c", linestyle="--", linewidth=1.2, label="Trust Cone ($r_{\mathrm{trust}}$)")
 
-        ax_map.set_xlabel("Position X [m]", fontsize=11)
-        ax_map.set_ylabel("Position Y [m]", fontsize=11)
-        
+        ax_map.set_xlabel("Position X [m]", fontsize=18, fontweight="bold")
+        ax_map.set_ylabel("Position Y [m]", fontsize=18, fontweight="bold")
+        ax_map.tick_params(axis="both", labelsize=15)
+
         title_m = (
-            "Panel 2: Trajectory & GUST Trust Cones"
+            "Trajectory & GUST Trust Cones"
             if is_gust_enabled
-            else "Panel 2: Trajectory on Textured Surface (No GUST Cones)"
+            else "Trajectory on Textured Surface (No GUST)"
         )
-        ax_map.set_title(title_m, fontweight="bold", fontsize=12)
+        ax_map.set_title(title_m, fontweight="bold", fontsize=20, pad=12)
         ax_map.axis("equal")
-        ax_map.grid(True, linestyle="--", alpha=0.4)
-        ax_map.legend(loc="upper right", fontsize=9)
+        ax_map.grid(True, linestyle="--", alpha=0.4, linewidth=0.8)
 
-        plt.tight_layout()
-        plt.savefig(image_path, dpi=300)
+        # Place legend below axis so surface contours, circle, and cones are completely unobstructed
+        ax_map.legend(
+            loc="upper center",
+            bbox_to_anchor=(0.5, -0.16),
+            ncol=2,
+            fontsize=18,
+            frameon=True,
+            facecolor="white",
+            edgecolor="#cccccc",
+            framealpha=0.95,
+        )
+
+        plt.savefig(image_path, dpi=300, bbox_inches="tight")
         print(f"\n[Logger] 2-panel GUST tactile tracing visual saved to: {image_path}")
 
 
@@ -571,9 +672,22 @@ def main():
         action="store_true",
         help="Disable GUST safety filter (runs unfiltered baseline at constant speed)",
     )
+    parser.add_argument(
+        "--constant-speed",
+        type=float,
+        default=None,
+        help="Disable adaptive governor and use a fixed speed scale."
+    )
     args = parser.parse_args()
 
-    enable_gust = not args.no_gust
+    # enable_gust = not args.no_gust
+    if args.constant_speed is not None:
+        if not (0.0 < args.constant_speed <= 1.0):
+            parser.error("--constant-speed must be in (0, 1].")
+        if args.no_gust:
+            parser.error("Use either --no-gust or --constant-speed.")
+
+    enable_gust = not args.no_gust and args.constant_speed is None
     print(f"[Init] GUST Safety Filter: {'ENABLED' if enable_gust else 'DISABLED (Baseline Mode)'}")
 
     scene = None
@@ -777,8 +891,10 @@ def main():
 
                         # 3. Compute Governor Speed Scaling Factor
                         governor_scale = gust.compute_governor_speed_scale(p_lookahead)
+                        
+                    elif args.constant_speed is not None:
+                        governor_scale = args.constant_speed
                     else:
-                        # BASELINE (UNFILTERED): Constant speed, no cones, no governor
                         governor_scale = 1.0
 
                     # 4. Advance Trajectory Angle
