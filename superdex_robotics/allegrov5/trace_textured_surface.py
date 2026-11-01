@@ -341,9 +341,9 @@ class ContactCircleTelemetryLogger:
             ax_f.text(ev_t + 0.05, max(forces) * 0.75, name, rotation=90, color="dimgray", fontsize=8)
         ax_f.set_xlabel("Time [s]")
         ax_f.set_ylabel("Normal Force [N]")
-        ax_f.set_title("Normal Contact Force vs Tolerance Band (2.0 ± 0.2 N)")
+        ax_f.set_title("Normal Contact Force vs Tolerance Band ({} ± {} N)".format(TARGET_FORCE_N, FORCE_TOLERANCE_N))
         ax_f.grid(True, linestyle="--", alpha=0.6)
-        ax_f.legend(loc="upper left")
+        ax_f.legend()
 
         # Panel 2: Constant Fingertip Height vs Undulating Terrain (Top-Right)
         ax_h = axs[0, 1]
